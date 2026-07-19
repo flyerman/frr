@@ -234,6 +234,7 @@ static FRR_NORETURN void usage(int status)
 		       "-c, --command            Execute argument as command\n"
 		       "-d, --daemon             Connect only to the specified daemon\n"
 		       "-f, --inputfile          Execute commands from specific file and exit\n"
+		       "-s, --stdin              Execute commands from stdin, one per line, until EOF\n"
 		       "-E, --echo               Echo prompt and command in -c mode\n"
 		       "-C, --dryrun             Check configuration for validity and exit\n"
 		       "-m, --markfile           Mark input file with context end\n"
@@ -270,6 +271,7 @@ struct option longopts[] = {
 	{"vty_socket", required_argument, NULL, OPTION_VTYSOCK},
 	{"config_dir", required_argument, NULL, OPTION_CONFDIR},
 	{"inputfile", required_argument, NULL, 'f'},
+	{"stdin", no_argument, NULL, 's'},
 	{"histfile", required_argument, NULL, 'H'},
 	{"echo", no_argument, NULL, 'E'},
 	{"dryrun", no_argument, NULL, 'C'},
@@ -414,6 +416,7 @@ int main(int argc, char **argv, char **env)
 	int no_error = 0;
 	int markfile = 0;
 	int writeconfig = 0;
+	int stdin_mode = 0;
 	int ret = 0;
 	char *homedir = NULL;
 	int ditch_suid = 0;
@@ -447,7 +450,7 @@ int main(int argc, char **argv, char **env)
 
 	/* Option handling. */
 	while (1) {
-		opt = getopt_long(argc, argv, "be:c:d:nf:H:mEhCwN:ut", longopts,
+		opt = getopt_long(argc, argv, "be:c:d:nf:sH:mEhCwN:ut", longopts,
 				  0);
 
 		if (opt == EOF)
@@ -496,6 +499,9 @@ int main(int argc, char **argv, char **env)
 			break;
 		case 'f':
 			inputfile = optarg;
+			break;
+		case 's':
+			stdin_mode = 1;
 			break;
 		case 'm':
 			markfile = 1;
@@ -549,6 +555,13 @@ int main(int argc, char **argv, char **env)
 	if (markfile + writeconfig + dryrun + boot_flag > 1) {
 		fprintf(stderr,
 			"Invalid combination of arguments.  Please specify at most one of:\n\t-b, -C, -m, -w\n");
+		return 1;
+	}
+	if (stdin_mode &&
+	    (cmd || inputfile || markfile || writeconfig || dryrun ||
+	     boot_flag)) {
+		fprintf(stderr,
+			"Invalid combination of arguments.  The -s option cannot be combined with:\n\t-b, -c, -C, -f, -m, -w\n");
 		return 1;
 	}
 	if (inputfile && (writeconfig || boot_flag)) {
@@ -739,6 +752,56 @@ int main(int argc, char **argv, char **env)
 				logpath, strerror(errno));
 			exit(1);
 		}
+	}
+
+	/* If stdin mode: execute commands from stdin, one per line, blocking
+	 * for further input until it is closed.  Command semantics are the
+	 * same as for -c, but the daemon connections are set up only once.
+	 */
+	if (stdin_mode) {
+		char line[VTY_BUFSIZ];
+
+		/* Enter into enable node. */
+		if (!user_mode)
+			vtysh_execute("enable");
+
+		vtysh_add_timestamp = ts_flag;
+
+		while (fgets(line, sizeof(line), stdin) != NULL) {
+			char *eol = strchr(line, '\n');
+
+			if (eol)
+				*eol = '\0';
+
+			if (echo_command)
+				printf("%s%s\n", vtysh_prompt(), line);
+
+			if (logfile)
+				log_it(line);
+
+			/*
+			 * Parsing logic for regular commands will be different
+			 * than for those commands requiring further
+			 * processing, such as cli instructions terminating
+			 * with question-mark character.
+			 */
+			if (!vtysh_execute_command_questionmark(line))
+				ret = CMD_SUCCESS;
+			else
+				ret = vtysh_execute_no_pager(line);
+
+			/* Make each command's output visible to a consumer of
+			 * our stdout as soon as it completed.
+			 */
+			fflush(stdout);
+
+			if (!no_error
+			    && !(ret == CMD_SUCCESS || ret == CMD_SUCCESS_DAEMON
+				 || ret == CMD_WARNING))
+				exit(1);
+		}
+
+		exit(0);
 	}
 
 	/* If eval mode. */
