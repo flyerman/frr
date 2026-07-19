@@ -1369,7 +1369,7 @@ def rlimit_atleast(rname, min_value, raises=False):
             nval = (min_value, hard if min_value < hard else min_value)
             logger.debug("Increasing rlimit %s from %s to %s", rname, cval, nval)
             resource.setrlimit(rname, nval)
-    except subprocess.CalledProcessError as error:
+    except (subprocess.CalledProcessError, ValueError, OSError) as error:
         logger.warning(
             "Failed to assure rlimit [%s] = %s", rname, min_value, exc_info=True
         )
