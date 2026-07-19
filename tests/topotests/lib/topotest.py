@@ -768,9 +768,15 @@ def module_present_linux(module, load):
 
     If `load` is true, it will try to load it via modprobe.
     """
-    with open("/proc/modules", "r") as modules_file:
-        if module.replace("-", "_") in modules_file.read():
-            return True
+    try:
+        with open("/proc/modules", "r") as modules_file:
+            if module.replace("-", "_") in modules_file.read():
+                return True
+    except IOError:
+        # Kernels without loadable module support (CONFIG_MODULES=n) have
+        # no /proc/modules; the module can only be built-in, which the
+        # modprobe below detects.
+        pass
     cmd = "/sbin/modprobe {}{}".format("" if load else "-n ", module)
     if os.system(cmd) != 0:
         return False
